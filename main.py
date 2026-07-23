@@ -1,9 +1,19 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from sqlmodel import Session, select, SQLModel, create_engine
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from datetime import datetime
+import logging
 
 from models.product import Product, ProductCreate, ProductUpdate, Category, CategoryCreate
+
+# ============================================
+# LOGGING SETUP
+# ============================================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ============================================
 # DATABASE SETUP - SQLite
@@ -19,10 +29,79 @@ def get_session():
 SQLModel.metadata.create_all(engine)
 
 app = FastAPI(
-    title="Product Catalog API",
-    description="A simple product catalog API with categories",
+    title="Product Catalog API - Ivy Githinji",
+    description="A complete CRUD API for product catalog with validation - C027-01-0883/2024",
     version="1.0.0"
 )
+
+# ============================================
+# GLOBAL EXCEPTION HANDLERS
+# ============================================
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    logger.warning(f"HTTP Exception: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "status_code": exc.status_code,
+            "message": exc.detail,
+            "path": request.url.path,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = []
+    for error in exc.errors():
+        errors.append({
+            "field": "".join(str(loc) for loc in error["loc"]),
+            "message": error["msg"],
+            "type": error["type"]
+        })
+    
+    logger.warning(f"Validation error: {errors}")
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "status_code": 422,
+            "message": "Validation error",
+            "errors": errors,
+            "path": request.url.path,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    logger.error(f"Integrity error: {exc}")
+    return JSONResponse(
+        status_code=409,
+        content={
+            "success": False,
+            "status_code": 409,
+            "message": "Duplicate entry or constraint violation",
+            "path": request.url.path,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "status_code": 500,
+            "message": "An internal error occurred",
+            "path": request.url.path,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
 
 # ============================================
 # ROOT ENDPOINT
@@ -32,6 +111,8 @@ app = FastAPI(
 def root():
     return {
         "message": "Welcome to the Product Catalog API",
+        "admission": "C027-01-0883/2024",
+        "author": "Ivy Githinji",
         "endpoints": {
             "categories": "/categories",
             "products": "/products",
@@ -47,7 +128,6 @@ def root():
 @app.post("/categories", response_model=Category, status_code=201)
 def create_category(category: CategoryCreate, session: Session = Depends(get_session)):
     """Create a new category"""
-    # Check if category already exists
     existing = session.exec(select(Category).where(Category.name == category.name)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Category already exists")
@@ -75,7 +155,7 @@ def create_product(product: ProductCreate, session: Session = Depends(get_sessio
     if existing:
         raise HTTPException(status_code=400, detail="A product with this name already exists")
     
-    # Check if category exists (if category_id is provided)
+    # Check if category exists
     if product.category_id:
         category = session.get(Category, product.category_id)
         if not category:
@@ -151,7 +231,6 @@ def update_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    # Update only the fields provided
     update_data = product_update.dict(exclude_unset=True)
     for key, value in update_data.items():
         setattr(product, key, value)
